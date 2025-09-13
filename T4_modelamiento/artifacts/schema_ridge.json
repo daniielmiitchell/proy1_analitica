@@ -1,0 +1,14 @@
+{
+  "num_cols": [
+    "impact_level",
+    "urgency_level",
+    "priority_level"
+  ],
+  "cat_cols": [
+    "number",
+    "opened_at",
+    "contact_type",
+    "category",
+    "subcategory"
+  ]
+}
