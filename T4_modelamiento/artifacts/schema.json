@@ -1,0 +1,16 @@
+{
+  "num_cols": [
+    "ttr_outlier",
+    "ttr_h_log",
+    "impact_level",
+    "urgency_level",
+    "priority_level"
+  ],
+  "cat_cols": [
+    "number",
+    "opened_at",
+    "contact_type",
+    "category",
+    "subcategory"
+  ]
+}
