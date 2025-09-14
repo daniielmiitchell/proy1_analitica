@@ -6,3 +6,5 @@ __pycache__/
 .DS_Store
 data/*
 !data/.gitkeep
+*.joblib
+T4_modelamiento/artifacts/*.joblib

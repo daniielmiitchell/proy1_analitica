@@ -21,6 +21,36 @@ DATA = ROOT / "T3_preparacion" / "incidents_clean_for_model.csv"
 ART  = ROOT / "T4_modelamiento" / "artifacts"
 ART.mkdir(parents=True, exist_ok=True)
 
+FORBIDDEN_TOKENS = [
+    "ttr", "resolve", "resolved", "close", "closed",
+    "duration", "elapsed", "breach", "sla", "tt_resolve",
+    "time_to", "tt_", "resolution"
+]
+def is_forbidden(colname: str) -> bool:
+    c = colname.lower()
+    return any(tok in c for tok in FORBIDDEN_TOKENS)
+
+def select_safe_features(df: pd.DataFrame, y_col: str) -> pd.DataFrame:
+    df = df.copy()
+    drop_targets = [c for c in df.columns if ("ttr" in c.lower()) or (c == y_col)]
+    safe = df.drop(columns=drop_targets, errors="ignore")
+    safe = safe[[c for c in safe.columns if not is_forbidden(c)]]
+    n = len(safe)
+    to_drop = []
+    for c in safe.select_dtypes(include="object").columns:
+        try:
+            if safe[c].nunique(dropna=True) / max(1, n) > 0.5:
+                to_drop.append(c)
+        except Exception:
+            pass
+    if to_drop:
+        print(f"[INFO] Se descartan columnas de alta cardinalidad: {to_drop}")
+        safe = safe.drop(columns=to_drop)
+        # al final de select_safe_features, antes de return:
+        safe = safe.select_dtypes(exclude=["datetime64[ns]", "datetime64[ns, UTC]"])
+
+    return safe
+
 def _build_ohe():
     """OneHotEncoder compatible con distintas versiones de scikit-learn."""
     try:
@@ -47,10 +77,12 @@ def main():
     df = df.loc[mask_ok].copy().reset_index(drop=True)
     y = pd.to_numeric(df[y_col], errors="coerce")
 
-    # 1.3 Definición de X sin fugas (quitamos variantes del target)
+   # 1.3 Definición de X sin fugas (quitamos variantes del target y filtramos features “seguras”)
     drop_targets = [c for c in ["ttr_h", "ttr_h_winsor", "ttr_h_log", "ttr_outlier"] if c in df.columns]
-    X = df.drop(columns=drop_targets)
+    X_full = df.drop(columns=drop_targets)
+    X = select_safe_features(X_full, y_col=y_col)
     print(f"Shape tras limpiar: X={X.shape}, y={y.shape}")
+
 
     print("=== 2) Split train/test ===")
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=SEED, shuffle=True)
@@ -60,6 +92,9 @@ def main():
     num_cols = Xtr.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = Xtr.select_dtypes(exclude=[np.number]).columns.tolist()
     print(f"Numéricas: {len(num_cols)} | Categóricas: {len(cat_cols)}")
+
+    if not num_cols and not cat_cols:
+        raise RuntimeError("No quedaron columnas para entrenar tras el filtrado seguro.")
 
     print("=== 4) Preprocesamiento ===")
     num_pipe = Pipeline(steps=[
@@ -126,3 +161,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+print("Ejemplo num_cols:", num_cols[:5])
+print("Ejemplo cat_cols:", cat_cols[:5])
