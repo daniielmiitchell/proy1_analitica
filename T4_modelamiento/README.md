@@ -1,5 +1,3 @@
-# T4 modelamiento
-
 # T4 – Modelamiento
 
 ## Objetivo
@@ -11,6 +9,7 @@ El propósito fue establecer un modelo baseline y luego probar un modelo más fl
 ## Datos utilizados
 - Dataset: `T3_preparacion/incidents_clean_for_model.csv`
 - Registros originales: **24,918**
+- Registros eliminados por target inválido: **1,556**
 - Registros válidos tras limpieza del target: **23,362**
 - Variables predictoras finales: **6** (3 numéricas, 3 categóricas)
 - Target: `ttr_h_winsor` (winsorizado para reducir impacto de outliers)
@@ -30,21 +29,30 @@ El propósito fue establecer un modelo baseline y luego probar un modelo más fl
 Los modelos fueron evaluados mediante validación cruzada de 5 folds en train y posteriormente en un set de test (20% de los datos).  
 Las métricas consideradas fueron: **MAE**, **RMSE** y **R²**.
 
-=== Comparación de modelos ===
-               MAE     RMSE     R2  CV_MAE_mean  CV_MAE_std
-Ridge         181.388  361.063  0.234      181.814       3.580
-RandomForest  174.376  356.594  0.253      175.885       3.077
+### Comparación de modelos
+
+| Modelo        | MAE ↓   | RMSE ↓  | R² ↑   | CV_MAE_mean | CV_MAE_std |
+|---------------|---------|---------|--------|-------------|------------|
+| Ridge         | 176.40  | 354.46  | 0.262  | 178.23      | 3.07       |
+| RandomForest  | 174.38  | 356.59  | 0.253  | 175.89      | 3.08       |
 
 ---
 
 ## Conclusión
-El modelo **RandomForest** logró un desempeño ligeramente superior al baseline de Ridge, reduciendo el MAE y el RMSE y alcanzando un R² de 0.25 frente a 0.23 del baseline.  
-Aunque el poder explicativo global es limitado (lo que refleja la complejidad y el ruido en el target TTR), consideramos que **RandomForest es el modelo a seleccionar para despliegue** en etapas posteriores (T7).
+El modelo **RandomForest** logra un MAE ligeramente mejor que el baseline de Ridge (~2 horas menos de error promedio), aunque empeora en RMSE y R².  
+Esto sugiere que, con las variables actuales, el problema es difícil de explicar y que **el modelo lineal (Ridge) es competitivo frente al RandomForest**.  
+
+Para futuras iteraciones se recomienda:
+- Explorar nuevas variables y características derivadas.  
+- Probar algoritmos adicionales (Gradient Boosting, XGBoost, LightGBM).  
+- Ajustar hiperparámetros para mejorar estabilidad en presencia de outliers.  
 
 ---
 
 ## Artefactos generados
-En la carpeta "T4_modelamiento/artifacts/" quedaron guardados los modelos y métricas:
+En la carpeta `T4_modelamiento/artifacts/` quedaron guardados los modelos y métricas:
 
-- "model_ridge.joblib" / "metrics_ridge.json" / "schema_ridge.json"
-- "model_random_forest.joblib" / "metrics_random_forest.json` / "schema_random_forest.json"
+- `model_ridge.joblib` / `metrics_ridge.json` / `schema_ridge.json`
+- `model_random_forest.joblib` / `metrics_random_forest.json` / `schema_random_forest.json`
+
+---

@@ -161,6 +161,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-print("Ejemplo num_cols:", num_cols[:5])
-print("Ejemplo cat_cols:", cat_cols[:5])
