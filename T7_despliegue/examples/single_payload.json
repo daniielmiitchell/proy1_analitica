@@ -1,0 +1,9 @@
+{
+  "priority_level": "P2",
+  "assignment_group": "Network",
+  "category": "Inquiry",
+  "some_numeric_feature": 12.4,
+  "another_numeric_feature": 3,
+  "opened_hour": 10,
+  "id": "SAMPLE_SINGLE"
+}

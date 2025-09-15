@@ -1,116 +1,126 @@
-# T7_despliegue/predict.py
-# Carga un pipeline entrenado (Ridge o RF) y predice TTR para uno o varios registros.
-# Uso:
-#   python3 T7_despliegue/predict.py --model T4_modelamiento/artifacts/model_ridge.joblib --json input.json
-#   cat input.json | python3 T7_despliegue/predict.py --model ... --stdin
-#   python3 T7_despliegue/predict.py --model ... --print-schema
-
-from __future__ import annotations
-import argparse
-import json
-import sys
+#!/usr/bin/env python3
+import argparse, json, sys
 from pathlib import Path
-from typing import List, Dict, Any, Union
-
-import joblib
 import pandas as pd
+import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-ART4 = ROOT / "T4_modelamiento" / "artifacts"
+def _try_import():
+    import joblib
+    return joblib
 
-DEFAULT_MODEL = ART4 / "model_ridge.joblib"        # por estabilidad
-FALLBACK_RF   = ART4 / "model_random_forest.joblib"  # si prefieres MAE
+def log(msg, verbose):
+    if verbose:
+        print(f"[INFO] {msg}", file=sys.stderr)
 
-# intentamos cargar un esquema si existe (para validar columnas)
-SCHEMA_CANDIDATES = [
-    ART4 / "schema_ridge.json",
-    ART4 / "schema_random_forest.json",
-]
+def load_artifacts(model_dir: Path, verbose=False):
+    joblib = _try_import()
+    model_path = model_dir / "best_model.joblib"
+    cols_path = model_dir / "feature_columns.json"
+    enc_path  = model_dir / "encoder.joblib"
+    scl_path  = model_dir / "scaler.joblib"
 
-def load_schema() -> Dict[str, Any] | None:
-    for p in SCHEMA_CANDIDATES:
-        if p.exists():
-            try:
-                return json.loads(p.read_text())
-            except Exception:
-                pass
-    return None
+    if not model_path.exists():
+        raise FileNotFoundError(f"Modelo no encontrado: {model_path}")
+    if not cols_path.exists():
+        raise FileNotFoundError(f"Definición de columnas no encontrada: {cols_path}")
 
-def expected_columns_from_schema(schema: Dict[str, Any] | None) -> List[str] | None:
-    if not schema:
-        return None
-    # buscá nombres típicos; ajusta si tu script guardó otra clave
-    for key in ["expected_features", "feature_names", "features", "columns"]:
-        if key in schema and isinstance(schema[key], list):
-            return list(schema[key])
-    # a veces el schema guarda por grupos
-    num = schema.get("num_cols") or schema.get("numericas") or []
-    cat = schema.get("cat_cols") or schema.get("categoricas") or []
-    if isinstance(num, list) and isinstance(cat, list) and (num or cat):
-        return list(num) + list(cat)
-    return None
+    model = joblib.load(model_path)
+    with open(cols_path, "r") as f:
+        feature_cols = json.load(f)
 
-def read_payload(source: Union[str, Path, None], use_stdin: bool) -> List[Dict[str, Any]]:
-    if use_stdin:
-        data = sys.stdin.read().strip()
-        if not data:
-            raise SystemExit("STDIN vacío. Pasa un JSON por pipe o usa --json file.json")
-        return json.loads(data) if data.lstrip().startswith("[") else [json.loads(data)]
-    elif source:
-        text = Path(source).read_text()
-        return json.loads(text) if text.lstrip().startswith("[") else [json.loads(text)]
-    else:
-        raise SystemExit("Necesitas --json <archivo> o --stdin")
+    encoder = joblib.load(enc_path) if enc_path.exists() else None
+    scaler  = joblib.load(scl_path) if scl_path.exists() else None
+    log("Artifacts cargados", verbose)
+    return model, feature_cols, encoder, scaler
 
-def validate_and_frame(rows: List[Dict[str, Any]], expected_cols: List[str] | None) -> pd.DataFrame:
-    df = pd.DataFrame(rows)
-    if expected_cols:
-        # advertimos si faltan o sobran
-        missing = [c for c in expected_cols if c not in df.columns]
-        extra   = [c for c in df.columns if c not in expected_cols]
-        if missing:
-            print(f"[WARN] Faltan columnas esperadas: {missing}", file=sys.stderr)
-        if extra:
-            print(f"[WARN] Columnas no esperadas en payload: {extra}", file=sys.stderr)
-        # reordenamos cuando sea posible
-        df = df.reindex(columns=expected_cols, fill_value=None)
+def preprocess(df: pd.DataFrame, feature_cols, encoder=None, scaler=None, verbose=False):
+    for col in feature_cols:
+        if col not in df.columns:
+            df[col] = np.nan
+    df = df[feature_cols].copy()
+
+    for col in df.columns:
+        if df[col].dtype.kind in "biufc":
+            df[col] = df[col].fillna(df[col].median())
+        else:
+            df[col] = df[col].fillna("missing")
+
+    if encoder is not None:
+        cat_cols = [c for c in df.columns if df[c].dtype == "object"]
+        if cat_cols:
+            enc_arr = encoder.transform(df[cat_cols])
+            enc_df = pd.DataFrame(enc_arr, index=df.index)
+            num_df = df[[c for c in df.columns if c not in cat_cols]].reset_index(drop=True)
+            df = pd.concat([num_df.reset_index(drop=True), enc_df.reset_index(drop=True)], axis=1)
+
+    if scaler is not None:
+        df[:] = scaler.transform(df.values)
+
+    if verbose:
+        log(f"Shape post-proc: {df.shape}", verbose)
     return df
 
+def predict_single(payload: dict, model_dir: Path, verbose=False):
+    model, feature_cols, encoder, scaler = load_artifacts(model_dir, verbose)
+    df = pd.DataFrame([payload])
+    X = preprocess(df, feature_cols, encoder, scaler, verbose)
+    y_hat = float(model.predict(X)[0])
+    return {
+        "ok": True,
+        "mode": "single",
+        "n_predictions": 1,
+        "predictions": [{"y_hat": round(y_hat, 2), "id": payload.get("id")}],
+        "model_info": {
+            "artifact_dir": str(model_dir),
+            "features_version": "feature_columns.json",
+            "model_file": "best_model.joblib"
+        }
+    }
+
+def predict_batch(csv_path: Path, model_dir: Path, verbose=False):
+    model, feature_cols, encoder, scaler = load_artifacts(model_dir, verbose)
+    df = pd.read_csv(csv_path)
+    ids = df["id"].astype(str).tolist() if "id" in df.columns else [None] * len(df)
+    X = preprocess(df, feature_cols, encoder, scaler, verbose)
+    preds = model.predict(X)
+    out = [{"id": _id, "y_hat": round(float(p), 2)} for _id, p in zip(ids, preds)]
+    return {
+        "ok": True,
+        "mode": "batch",
+        "n_predictions": len(out),
+        "predictions": out,
+        "model_info": {
+            "artifact_dir": str(model_dir),
+            "features_version": "feature_columns.json",
+            "model_file": "best_model.joblib"
+        }
+    }
+
 def main():
-    parser = argparse.ArgumentParser(description="Predictor TTR con pipeline entrenado")
-    parser.add_argument("--model", type=str, default=str(DEFAULT_MODEL),
-                        help="Ruta al .joblib del pipeline (por defecto Ridge).")
-    parser.add_argument("--json", type=str, help="Archivo JSON con 1 o más registros.")
-    parser.add_argument("--stdin", action="store_true", help="Leer el JSON desde STDIN.")
-    parser.add_argument("--print-schema", action="store_true",
-                        help="Imprime columnas esperadas si hay schema disponible.")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["single","batch"], required=True)
+    ap.add_argument("--input", required=True, help="Ruta a .json (single) o .csv (batch)")
+    ap.add_argument("--output", help="Archivo de salida JSON")
+    ap.add_argument("--model-dir", default="models", help="Carpeta con artifacts")
+    ap.add_argument("--verbose", action="store_true")
+    args = ap.parse_args()
 
-    model_path = Path(args.model)
-    if not model_path.exists():
-        # fallback rápido a RF si el de Ridge no existe
-        if Path(FALLBACK_RF).exists():
-            print(f"[INFO] No se encontró {model_path.name}. Usando RF por defecto.", file=sys.stderr)
-            model_path = Path(FALLBACK_RF)
+    model_dir = Path(args.model_dir)
+    try:
+        if args.mode == "single":
+            with open(args.input, "r") as f:
+                payload = json.load(f)
+            result = predict_single(payload, model_dir, verbose=args.verbose)
         else:
-            raise SystemExit(f"No existe el modelo: {model_path}")
+            result = predict_batch(Path(args.input), model_dir, verbose=args.verbose)
 
-    print(f"[INFO] Cargando modelo: {model_path}")
-    pipe = joblib.load(model_path)
-
-    schema = load_schema()
-    exp_cols = expected_columns_from_schema(schema)
-    if args.print-schema:
-        print(json.dumps({"expected_columns": exp_cols}, indent=2, ensure_ascii=False))
-        return
-
-    rows = read_payload(args.json, args.stdin)
-    df = validate_and_frame(rows, exp_cols)
-
-    # predict
-    preds = pipe.predict(df)
-    out = [{"prediction_ttr_h": float(p)} for p in preds]
-    print(json.dumps(out, indent=2, ensure_ascii=False))
+        out_str = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.output:
+            Path(args.output).write_text(out_str, encoding="utf-8")
+        print(out_str)
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False, indent=2))
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
